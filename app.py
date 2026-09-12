@@ -18,52 +18,76 @@ def compute_rsi(series, window=14):
   return rsi.iloc[-1] if not rsi.empty else 50.0
 
 
-def fetch_coinbase_matrix():
-  # Map timeframes to Coinbase product candles granularity (in seconds)
-  # 60 (1m), 300 (5m), 900 (15m), 3600 (1H), 21600 (6H->use 3600 and resample or 21600), 86400 (1D)
+def fetch_kraken_matrix():
+  # Kraken intervals in minutes: 1m, 5m, 15m, 60m (1h), 240m (4h), 1440m (1d)
   tf_mapping = {
-      "1M": 60,
-      "5M": 300,
-      "15M": 900,
-      "1H": 3600,
-      "4H": 21600,
-      "1D": 86400,
+      "1M": 1,
+      "5M": 5,
+      "15M": 15,
+      "1H": 60,
+      "4H": 240,
+      "1D": 1440,
   }
   results = {}
   current_price = 0.0
 
-  # 1. Fetch Live Price from Coinbase
+  # 1. Fetch live ticker from Kraken
   try:
-    price_res = requests.get(
-        "https://api.coinbase.com/v2/prices/BTC-USD/spot", timeout=5
+    ticker_res = requests.get(
+        "https://api.kraken.com/0/public/Ticker?pair=XBTUSD", timeout=5
     )
-    if price_res.status_code == 200:
-      current_price = float(price_res.json()["data"]["amount"])
-  except Exception as e:
-    st.error(f"Price Fetch Error: {e}")
-
-  # 2. Fetch Historical Candles for Indicators via Coinbase Pro / Exchange API
-  for label, granularity in tf_mapping.items():
-    try:
-      url = f"https://api.pro.coinbase.com/products/BTC-USD/candles?granularity={granularity}"
-      res = requests.get(
-          url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5
+    if ticker_res.status_code == 200:
+      data = ticker_res.json()
+      # Kraken uses XXBTZUSD format for BTC/USD
+      pair_key = (
+          "XXBTZUSD" if "XXBTZUSD" in data.get("result", {}) else "BTCUSD"
       )
+      if pair_key in data["result"]:
+        current_price = float(data["result"][pair_key]["c"][0])
+  except Exception as e:
+    st.error(f"Kraken Price Error: {e}")
+
+  # 2. Fetch OHLC candle data for indicators
+  for label, interval in tf_mapping.items():
+    try:
+      url = f"https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval={interval}"
+      res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
 
       if res.status_code != 200:
         results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
         continue
 
-      # Coinbase candles format: [ time, low, high, open, close, volume ]
-      raw_data = res.json()
-      if not isinstance(raw_data, list) or len(raw_data) < 5:
+      payload = res.json()
+      if "result" not in payload:
         results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
         continue
 
-      df = pd.DataFrame(raw_data, columns=["time", "low", "high", "open", "close", "volume"])
-      # Coinbase returns newest candles first, so reverse to chronological order
-      df = df.iloc[::-1].reset_index(drop=True)
+      # Find the dynamic key name inside results (e.g., 'XXBTZUSD')
+      result_keys = [k for k in payload["result"].keys() if k != "last"]
+      if not result_keys:
+        results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
+        continue
+
+      raw_candles = payload["result"][result_keys[0]]
+      # Kraken OHLC format: [time, open, high, low, close, vwap, volume, count]
+      df = pd.DataFrame(
+          raw_candles,
+          columns=[
+              "time",
+              "open",
+              "high",
+              "low",
+              "close",
+              "vwap",
+              "volume",
+              "count",
+          ],
+      )
       df["close"] = df["close"].astype(float)
+
+      if len(df) < 15:
+        results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
+        continue
 
       rsi_val = compute_rsi(df["close"])
       ema9 = df["close"].ewm(span=9).mean().iloc[-1]
@@ -134,7 +158,7 @@ st.markdown("""
 # Native Streamlit Fragment that automatically reruns every 5 seconds
 @st.fragment(run_every=5)
 def render_live_scanner():
-  price, matrix = fetch_coinbase_matrix()
+  price, matrix = fetch_kraken_matrix()
   current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
   m15_rsi = matrix.get("15M", {}).get("rsi", 50)
@@ -143,7 +167,6 @@ def render_live_scanner():
       "BEARISH BREAKOUT WATCH" if m15_rsi > 55 else "BULLISH ACCUMULATION WATCH"
   )
 
-  # Fallback check if price came back empty
   display_price = price if price > 0 else 77000.0
 
   terminal_display = f"""+-------------------------------------------------------+
@@ -165,10 +188,10 @@ def render_live_scanner():
 | CONDITION     : MACRO COMPRESSION (5M,15M)            |
 | STRATEGY      : {strategy:<37} |
 +-------------------------------------------------------+
-| LAST SYNC     : {current_time} | Status: COINBASE LIVE|
+| LAST SYNC     : {current_time} | Status: KRAKEN LIVE  |
 +-------------------------------------------------------+"""
 
-  st.markdown(f"```text\n{terminal_display}\n```")
+st.markdown(f"```text\n{terminal_display}\n```")
 
 
 render_live_scanner()

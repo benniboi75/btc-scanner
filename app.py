@@ -1,3 +1,4 @@
+from datetime import datetime
 import pandas as pd
 import streamlit as st
 import yfinance as yf
@@ -52,7 +53,6 @@ def compute_rsi(series, window=14):
   return rsi.iloc[-1] if not rsi.empty else 50.0
 
 
-# No cache decorator—fetches live data fresh on every rerun/click
 def fetch_robust_matrix():
   intervals = {
       "1M": "1m",
@@ -126,6 +126,7 @@ def fetch_robust_matrix():
 
 
 price, matrix = fetch_robust_matrix()
+current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 m15_rsi = matrix.get("15M", {}).get("rsi", 50)
 mode = "COUNTER-TREND" if m15_rsi > 60 or m15_rsi < 40 else "TREND-FOLLOW"
@@ -152,7 +153,7 @@ terminal_display = f"""+-------------------------------------------------------+
 | CONDITION     : MACRO COMPRESSION (5M,15M)            |
 | STRATEGY      : {strategy:<37} |
 +-------------------------------------------------------+
-| Controls: Web Live-Sync | Status: CONNECTED (5G)      |
+| LAST SYNC     : {current_time} | Status: LIVE 5G       |
 +-------------------------------------------------------+"""
 
 st.markdown(f"```text\n{terminal_display}\n```")

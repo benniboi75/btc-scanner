@@ -2,15 +2,11 @@ from datetime import datetime
 import pandas as pd
 import requests
 import streamlit as st
-from streamlit_autorefresh import st_autorefresh
 
 # Page configuration for a compact terminal layout
 st.set_page_config(
     page_title="BTC Terminal Scanner", page_icon="💻", layout="centered"
 )
-
-# Automatically refresh the app every 5 seconds (5000 milliseconds)
-st_autorefresh(interval=5000, limit=None, key="btc_auto_scanner")
 
 # Force aggressive pure black background and neon green text styling across all elements
 st.markdown("""
@@ -62,7 +58,6 @@ def fetch_binance_matrix():
   results = {}
   current_price = 77000.0
 
-  # Fetch live price directly from Binance public ticker
   try:
     ticker_res = requests.get(
         "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=3
@@ -84,7 +79,7 @@ def fetch_binance_matrix():
       df = pd.DataFrame(raw_data, columns=[
           "open_time", "open", "high", "low", "close", "volume",
           "close_time", "quote_asset_volume", "number_of_trades",
-          "taker_buy_base", "taker_buy_quote", "ignore"
+          "taker_bay_base", "taker_buy_quote", "ignore"
       ])
       df["close"] = df["close"].astype(float)
 
@@ -118,16 +113,19 @@ def fetch_binance_matrix():
   return current_price, results
 
 
-price, matrix = fetch_binance_matrix()
-current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# Native Streamlit Fragment that automatically reruns every 5 seconds natively
+@st.fragment(run_every=5)
+def render_live_scanner():
+  price, matrix = fetch_binance_matrix()
+  current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-m15_rsi = matrix.get("15M", {}).get("rsi", 50)
-mode = "COUNTER-TREND" if m15_rsi > 60 or m15_rsi < 40 else "TREND-FOLLOW"
-strategy = (
-    "BEARISH BREAKOUT WATCH" if m15_rsi > 55 else "BULLISH ACCUMULATION WATCH"
-)
+  m15_rsi = matrix.get("15M", {}).get("rsi", 50)
+  mode = "COUNTER-TREND" if m15_rsi > 60 or m15_rsi < 40 else "TREND-FOLLOW"
+  strategy = (
+      "BEARISH BREAKOUT WATCH" if m15_rsi > 55 else "BULLISH ACCUMULATION WATCH"
+  )
 
-terminal_display = f"""+-------------------------------------------------------+
+  terminal_display = f"""+-------------------------------------------------------+
 |  MULTI-TF SCANNER (Auto-Mode & Scrollable)            |
 +-------------------------------------------------------+
 | 1M     : RSI {matrix['1M']['rsi']:<4} | P: {matrix['1M']['p']}  | MA: {matrix['1M']['ma']}  {matrix['1M']['light']}        |
@@ -146,7 +144,11 @@ terminal_display = f"""+-------------------------------------------------------+
 | CONDITION     : MACRO COMPRESSION (5M,15M)            |
 | STRATEGY      : {strategy:<37} |
 +-------------------------------------------------------+
-| LAST SYNC     : {current_time} | Status: LIVE API     |
+| LAST SYNC     : {current_time} | Status: NATIVE STREAM|
 +-------------------------------------------------------+"""
 
-st.markdown(f"```text\n{terminal_display}\n```")
+  st.markdown(f"```text\n{terminal_display}\n```")
+
+
+# Run the live fragment block
+render_live_scanner()

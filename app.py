@@ -1,5 +1,6 @@
 from datetime import datetime
 import pandas as pd
+import requests
 import streamlit as st
 import yfinance as yf
 
@@ -54,6 +55,10 @@ def compute_rsi(series, window=14):
 
 
 def fetch_robust_matrix():
+  # Create a fresh session every call to bypass yfinance internal caching
+  session = requests.Session()
+  session.headers.update({"User-Agent": "Mozilla/5.0"})
+
   intervals = {
       "1M": "1m",
       "5M": "5m",
@@ -65,7 +70,9 @@ def fetch_robust_matrix():
   results = {}
   current_price = 77000.0
 
-  df_main = yf.download("BTC-USD", period="1d", interval="1m", progress=False)
+  df_main = yf.download(
+      "BTC-USD", period="1d", interval="1m", progress=False, session=session
+  )
   if isinstance(df_main.columns, pd.MultiIndex):
     df_main.columns = df_main.columns.get_level_values(0)
   if not df_main.empty:
@@ -74,7 +81,13 @@ def fetch_robust_matrix():
   for label, tf in intervals.items():
     try:
       period_val = "1d" if tf in ["1m", "5m", "15m"] else "5d"
-      df = yf.download("BTC-USD", period=period_val, interval=tf, progress=False)
+      df = yf.download(
+          "BTC-USD",
+          period=period_val,
+          interval=tf,
+          progress=False,
+          session=session,
+      )
       if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 

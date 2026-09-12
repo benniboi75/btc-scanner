@@ -19,7 +19,6 @@ def compute_rsi(series, window=14):
 
 
 def fetch_kraken_matrix():
-  # Kraken intervals in minutes: 1m, 5m, 15m, 60m (1h), 240m (4h), 1440m (1d)
   tf_mapping = {
       "1M": 1,
       "5M": 5,
@@ -31,14 +30,12 @@ def fetch_kraken_matrix():
   results = {}
   current_price = 0.0
 
-  # 1. Fetch live ticker from Kraken
   try:
     ticker_res = requests.get(
         "https://api.kraken.com/0/public/Ticker?pair=XBTUSD", timeout=5
     )
     if ticker_res.status_code == 200:
       data = ticker_res.json()
-      # Kraken uses XXBTZUSD format for BTC/USD
       pair_key = (
           "XXBTZUSD" if "XXBTZUSD" in data.get("result", {}) else "BTCUSD"
       )
@@ -47,7 +44,6 @@ def fetch_kraken_matrix():
   except Exception as e:
     st.error(f"Kraken Price Error: {e}")
 
-  # 2. Fetch OHLC candle data for indicators
   for label, interval in tf_mapping.items():
     try:
       url = f"https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval={interval}"
@@ -62,14 +58,12 @@ def fetch_kraken_matrix():
         results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
         continue
 
-      # Find the dynamic key name inside results (e.g., 'XXBTZUSD')
       result_keys = [k for k in payload["result"].keys() if k != "last"]
       if not result_keys:
         results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
         continue
 
       raw_candles = payload["result"][result_keys[0]]
-      # Kraken OHLC format: [time, open, high, low, close, vwap, volume, count]
       df = pd.DataFrame(
           raw_candles,
           columns=[
@@ -191,7 +185,8 @@ def render_live_scanner():
 | LAST SYNC     : {current_time} | Status: KRAKEN LIVE  |
 +-------------------------------------------------------+"""
 
-st.markdown(f"```text\n{terminal_display}\n```")
+  st.markdown(f"```text\n{terminal_display}\n```")
 
 
+# Run the live fragment block
 render_live_scanner()

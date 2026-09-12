@@ -52,7 +52,7 @@ def compute_rsi(series, window=14):
   return rsi.iloc[-1] if not rsi.empty else 50.0
 
 
-@st.cache_data(ttl=15)
+# No cache decorator—fetches live data fresh on every rerun/click
 def fetch_robust_matrix():
   intervals = {
       "1M": "1m",
@@ -65,8 +65,7 @@ def fetch_robust_matrix():
   results = {}
   current_price = 77000.0
 
-  # Fetch main reference price safely
-  df_main = yf.download("BTC-USD", period="2d", interval="1h", progress=False)
+  df_main = yf.download("BTC-USD", period="1d", interval="1m", progress=False)
   if isinstance(df_main.columns, pd.MultiIndex):
     df_main.columns = df_main.columns.get_level_values(0)
   if not df_main.empty:
@@ -78,6 +77,19 @@ def fetch_robust_matrix():
       df = yf.download("BTC-USD", period=period_val, interval=tf, progress=False)
       if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
+
+      if label == "4H" and not df.empty:
+        df = (
+            df.resample("4H")
+            .agg({
+                "Open": "first",
+                "High": "max",
+                "Low": "min",
+                "Close": "last",
+                "Volume": "sum",
+            })
+            .dropna()
+        )
 
       if df.empty or len(df) < 5:
         results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}

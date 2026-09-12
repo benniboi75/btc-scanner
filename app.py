@@ -1,5 +1,4 @@
 from datetime import datetime
-import time
 import pandas as pd
 import requests
 import streamlit as st
@@ -65,7 +64,6 @@ st.sidebar.markdown("Status: **Connected to Kraken Live API**")
 
 def compute_rsi(series, window=14):
   delta = series.diff()
-  # Use EMA-based smoothing for more stable RSI values (prevents erratic 1M spikes)
   gain = delta.clip(lower=0)
   loss = -1 * delta.clip(upper=0)
   avg_gain = gain.ewm(com=window - 1, min_periods=window).mean()
@@ -85,6 +83,9 @@ def fetch_kraken_matrix():
       "4H": 240,
       "1D": 1440,
   }
+
+  rsi_windows = {"1M": 7, "5M": 7, "15M": 7, "1H": 14, "4H": 14, "1D": 14}
+
   results = {}
   current_price = 0.0
 
@@ -137,16 +138,16 @@ def fetch_kraken_matrix():
       )
       df["close"] = df["close"].astype(float)
 
-      if len(df) < 20:
+      window_size = rsi_windows.get(label, 14)
+      if len(df) < window_size + 5:
         results[label] = {"rsi": 50.0, "p": "▲", "light": "[   ]"}
         continue
 
-      rsi_val = compute_rsi(df["close"])
+      rsi_val = compute_rsi(df["close"], window=window_size)
       close_price = df["close"].iloc[-1]
       prev_close = df["close"].iloc[-2]
       p_dir = "▲" if close_price >= prev_close else "▼"
 
-      # Traffic Lights reflecting RSI ONLY
       if rsi_val > 55:
         light = "[ 🟢 ]"
       elif rsi_val < 45:
@@ -165,20 +166,18 @@ def fetch_kraken_matrix():
   return current_price, results
 
 
-# Create a placeholder container for smooth, non-flickering updates
-terminal_placeholder = st.empty()
-
-# Live update loop
-while True:
+# Native Streamlit Fragment that automatically fetches and re-renders every 5 seconds
+@st.fragment(run_every=5)
+def render_live_scanner(tf_selection, mode_selection):
   price, matrix = fetch_kraken_matrix()
   current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-  tf_rsi = matrix.get(active_tf, {}).get("rsi", 50)
+  tf_rsi = matrix.get(tf_selection, {}).get("rsi", 50)
 
-  if selected_mode == "AUTO":
+  if mode_selection == "AUTO":
     mode = "COUNTER-TREND" if tf_rsi > 60 or tf_rsi < 40 else "TREND-FOLLOW"
   else:
-    mode = selected_mode
+    mode = mode_selection
 
   strategy = (
       "BEARISH BREAKOUT WATCH" if tf_rsi > 55 else "BULLISH ACCUMULATION WATCH"
@@ -187,7 +186,7 @@ while True:
 
   rows = []
   for tf in tf_options:
-    label_str = f"{tf.ljust(4)}(*)" if tf == active_tf else f"{tf.ljust(7)}"
+    label_str = f"{tf.ljust(4)}(*)" if tf == tf_selection else f"{tf.ljust(7)}"
     m_data = matrix.get(tf, {"rsi": 50.0, "p": "▲", "light": "[   ]"})
     rows.append(
         f"| {label_str} : RSI {str(m_data['rsi']).ljust(4)} | P: {m_data['p']}  |"
@@ -197,23 +196,24 @@ while True:
   rows_joined = "\n".join(rows)
 
   terminal_display = f"""+-------------------------------------------------------+
-|  MULTI-TF SCANNER (Live Stream & Placeholder Loop)    |
+|  MULTI-TF SCANNER (Live Fragment Auto-Refresh)        |
 +-------------------------------------------------------+
 {rows_joined}
 +-------------------------------------------------------+
 | MODE          : {mode:<37} |
-| ACTIVE TF     : {active_tf:<37} |
+| ACTIVE TF     : {tf_selection:<37} |
 | BTC PRICE     : ${display_price:,.2f}                     |
 | FADE-SHORT SL : ${display_price * 1.002:,.2f}               |
 | SIZE (BTC)    : 0.0360                                |
 | SIZE (USD)    : ${display_price * 0.0360:,.2f}                |
-| CONDITION     : MACRO COMPRESSION ({active_tf})                 |
+| CONDITION     : MACRO COMPRESSION ({tf_selection})                 |
 | STRATEGY      : {strategy:<37} |
 +-------------------------------------------------------+
 | LAST SYNC     : {current_time} | Status: LIVE KRAKEN  |
 +-------------------------------------------------------+"""
 
-  # Update the text inside the placeholder cleanly without reloading the page or locking inputs
-  terminal_placeholder.markdown(f"```text\n{terminal_display}\n```")
+  st.markdown(f"```text\n{terminal_display}\n```")
 
-  time.sleep(5)
+
+# Run the live loop block passing current sidebar states
+render_live_scanner(active_tf, selected_mode)

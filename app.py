@@ -2,12 +2,16 @@ from datetime import datetime
 import pandas as pd
 import requests
 import streamlit as st
+from streamlit_autorefresh import st_autorefresh
 import yfinance as yf
 
 # Page configuration for a compact terminal layout
 st.set_page_config(
     page_title="BTC Terminal Scanner", page_icon="💻", layout="centered"
 )
+
+# Automatically refresh the app every 5 seconds (5000 milliseconds)
+st_autorefresh(interval=5000, limit=None, key="btc_auto_scanner")
 
 # Force aggressive pure black background and neon green text styling across all elements
 st.markdown("""
@@ -55,7 +59,6 @@ def compute_rsi(series, window=14):
 
 
 def fetch_robust_matrix():
-  # Create a fresh session every call to bypass yfinance internal caching
   session = requests.Session()
   session.headers.update({"User-Agent": "Mozilla/5.0"})
 
@@ -166,10 +169,7 @@ terminal_display = f"""+-------------------------------------------------------+
 | CONDITION     : MACRO COMPRESSION (5M,15M)            |
 | STRATEGY      : {strategy:<37} |
 +-------------------------------------------------------+
-| LAST SYNC     : {current_time} | Status: LIVE 5G       |
+| LAST SYNC     : {current_time} | Status: AUTO-STREAM  |
 +-------------------------------------------------------+"""
 
 st.markdown(f"```text\n{terminal_display}\n```")
-
-if st.button("🔄 REFRESH LIVE FEED"):
-  st.rerun()

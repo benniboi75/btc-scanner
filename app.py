@@ -12,10 +12,6 @@ st.set_page_config(
 # Force pure black background and neon green text
 st.markdown("""
     <style>
-    *, *:before, *:after {
-        transition: none !important;
-        animation: none !important;
-    }
     .stApp, .main, .block-container, div[data-testid="stVerticalBlock"] {
         background-color: #000000 !important;
         color: #00FF00 !important;
@@ -55,28 +51,13 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- INITIALIZE SESSION STATE ---
-if "selected_tf" not in st.session_state:
-  st.session_state.selected_tf = "15M"
-if "selected_mode" not in st.session_state:
-  st.session_state.selected_mode = "AUTO"
-
 # --- SIDEBAR CONTROLS ---
 st.sidebar.markdown("### 🎛️ TERMINAL CONTROLS")
 tf_options = ["1M", "5M", "15M", "1H", "4H", "1D"]
 mode_options = ["AUTO", "COUNTER-TREND", "TREND-FOLLOW"]
 
-# Dropdowns directly bound to session state keys
-active_tf = st.sidebar.selectbox(
-    "Active Timeframe", tf_options, index=tf_options.index(st.session_state.selected_tf), key="tf_box"
-)
-selected_mode = st.sidebar.selectbox(
-    "Trading Mode", mode_options, index=mode_options.index(st.session_state.selected_mode), key="mode_box"
-)
-
-# Update session state values immediately when changed
-st.session_state.selected_tf = active_tf
-st.session_state.selected_mode = selected_mode
+active_tf = st.sidebar.selectbox("Active Timeframe", tf_options, index=2)
+selected_mode = st.sidebar.selectbox("Trading Mode", mode_options, index=0)
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("Status: **Connected to Kraken Live API**")
@@ -84,11 +65,15 @@ st.sidebar.markdown("Status: **Connected to Kraken Live API**")
 
 def compute_rsi(series, window=14):
   delta = series.diff()
-  gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-  loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-  rs = gain / loss
+  # Use EMA-based smoothing for more stable RSI values (prevents erratic 1M spikes)
+  gain = delta.clip(lower=0)
+  loss = -1 * delta.clip(upper=0)
+  avg_gain = gain.ewm(com=window - 1, min_periods=window).mean()
+  avg_loss = loss.ewm(com=window - 1, min_periods=window).mean()
+  rs = avg_gain / avg_loss
   rsi = 100 - (100 / (1 + rs))
-  return rsi.iloc[-1] if not rsi.empty else 50.0
+  val = rsi.iloc[-1]
+  return float(val) if not pd.isna(val) else 50.0
 
 
 def fetch_kraken_matrix():
@@ -114,8 +99,8 @@ def fetch_kraken_matrix():
       )
       if pair_key in data["result"]:
         current_price = float(data["result"][pair_key]["c"][0])
-  except Exception as e:
-    st.error(f"Kraken Price Error: {e}")
+  except Exception:
+    pass
 
   for label, interval in tf_mapping.items():
     try:
@@ -123,17 +108,17 @@ def fetch_kraken_matrix():
       res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
 
       if res.status_code != 200:
-        results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
+        results[label] = {"rsi": 50.0, "p": "▲", "light": "[   ]"}
         continue
 
       payload = res.json()
       if "result" not in payload:
-        results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
+        results[label] = {"rsi": 50.0, "p": "▲", "light": "[   ]"}
         continue
 
       result_keys = [k for k in payload["result"].keys() if k != "last"]
       if not result_keys:
-        results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
+        results[label] = {"rsi": 50.0, "p": "▲", "light": "[   ]"}
         continue
 
       raw_candles = payload["result"][result_keys[0]]
@@ -152,24 +137,14 @@ def fetch_kraken_matrix():
       )
       df["close"] = df["close"].astype(float)
 
-      if len(df) < 15:
-        results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
+      if len(df) < 20:
+        results[label] = {"rsi": 50.0, "p": "▲", "light": "[   ]"}
         continue
 
       rsi_val = compute_rsi(df["close"])
-      ema9 = df["close"].ewm(span=9).mean().iloc[-1]
-      ema21 = df["close"].ewm(span=21).mean().iloc[-1]
       close_price = df["close"].iloc[-1]
       prev_close = df["close"].iloc[-2]
-
       p_dir = "▲" if close_price >= prev_close else "▼"
-
-      if ema9 > ema21:
-        ma_dir = "▲"
-      elif ema9 < ema21:
-        ma_dir = "▼"
-      else:
-        ma_dir = "X"
 
       # Traffic Lights reflecting RSI ONLY
       if rsi_val > 55:
@@ -180,44 +155,49 @@ def fetch_kraken_matrix():
         light = "[ 🟡 ]"
 
       results[label] = {
-          "rsi": round(float(rsi_val), 1),
+          "rsi": round(rsi_val, 1),
           "p": p_dir,
-          "ma": ma_dir,
           "light": light,
       }
     except Exception:
-      results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
+      results[label] = {"rsi": 50.0, "p": "▲", "light": "[   ]"}
 
   return current_price, results
 
 
-# --- FETCH DATA & RENDER TERMINAL ---
-price, matrix = fetch_kraken_matrix()
-current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# Create a placeholder container for smooth, non-flickering updates
+terminal_placeholder = st.empty()
 
-tf_rsi = matrix.get(active_tf, {}).get("rsi", 50)
+# Live update loop
+while True:
+  price, matrix = fetch_kraken_matrix()
+  current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-if selected_mode == "AUTO":
-  mode = "COUNTER-TREND" if tf_rsi > 60 or tf_rsi < 40 else "TREND-FOLLOW"
-else:
-  mode = selected_mode
+  tf_rsi = matrix.get(active_tf, {}).get("rsi", 50)
 
-strategy = "BEARISH BREAKOUT WATCH" if tf_rsi > 55 else "BULLISH ACCUMULATION WATCH"
-display_price = price if price > 0 else 77000.0
+  if selected_mode == "AUTO":
+    mode = "COUNTER-TREND" if tf_rsi > 60 or tf_rsi < 40 else "TREND-FOLLOW"
+  else:
+    mode = selected_mode
 
-rows = []
-for tf in tf_options:
-  label_str = f"{tf.ljust(4)}(*)" if tf == active_tf else f"{tf.ljust(7)}"
-  m_data = matrix.get(tf, {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"})
-  rows.append(
-      f"| {label_str} : RSI {str(m_data['rsi']).ljust(4)} | P: {m_data['p']}  |"
-      f" MA: {m_data['ma']}  {m_data['light'].ljust(6)} |"
+  strategy = (
+      "BEARISH BREAKOUT WATCH" if tf_rsi > 55 else "BULLISH ACCUMULATION WATCH"
   )
+  display_price = price if price > 0 else 77000.0
 
-rows_joined = "\n".join(rows)
+  rows = []
+  for tf in tf_options:
+    label_str = f"{tf.ljust(4)}(*)" if tf == active_tf else f"{tf.ljust(7)}"
+    m_data = matrix.get(tf, {"rsi": 50.0, "p": "▲", "light": "[   ]"})
+    rows.append(
+        f"| {label_str} : RSI {str(m_data['rsi']).ljust(4)} | P: {m_data['p']}  |"
+        f" Light: {m_data['light']} |"
+    )
 
-terminal_display = f"""+-------------------------------------------------------+
-|  MULTI-TF SCANNER (Interactive Sidebar Controls)      |
+  rows_joined = "\n".join(rows)
+
+  terminal_display = f"""+-------------------------------------------------------+
+|  MULTI-TF SCANNER (Live Stream & Placeholder Loop)    |
 +-------------------------------------------------------+
 {rows_joined}
 +-------------------------------------------------------+
@@ -233,8 +213,7 @@ terminal_display = f"""+-------------------------------------------------------+
 | LAST SYNC     : {current_time} | Status: LIVE KRAKEN  |
 +-------------------------------------------------------+"""
 
-st.markdown(f"```text\n{terminal_display}\n```")
+  # Update the text inside the placeholder cleanly without reloading the page or locking inputs
+  terminal_placeholder.markdown(f"```text\n{terminal_display}\n```")
 
-# Auto-refresh loop every 5 seconds without full page jumps
-time.sleep(5)
-st.rerun()
+  time.sleep(5)

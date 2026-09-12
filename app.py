@@ -8,6 +8,64 @@ st.set_page_config(
     page_title="BTC Terminal Scanner", page_icon="💻", layout="centered"
 )
 
+# Force aggressive pure black background, neon green text, and disable all transitions/flashing
+st.markdown("""
+    <style>
+    /* Disable all default browser/Streamlit transition fades and animations to stop flashing */
+    *, *:before, *:after {
+        transition: none !important;
+        animation: none !important;
+    }
+    .stApp, .main, .block-container, div[data-testid="stVerticalBlock"] {
+        background-color: #000000 !important;
+        color: #00FF00 !important;
+    }
+    pre {
+        background-color: #000000 !important;
+        color: #00FF00 !important;
+        border: 1px solid #00FF00 !important;
+        padding: 15px;
+        border-radius: 4px;
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 13px;
+        line-height: 1.4;
+    }
+    p, span, label, h1, h2, h3, div {
+        color: #00FF00 !important;
+        font-family: 'Courier New', Courier, monospace !important;
+    }
+    .stButton>button {
+        background-color: #000000 !important;
+        color: #00FF00 !important;
+        border: 1px solid #00FF00 !important;
+        font-family: 'Courier New', Courier, monospace !important;
+        border-radius: 4px;
+    }
+    .stButton>button:hover {
+        background-color: #00FF00 !important;
+        color: #000000 !important;
+    }
+    section[data-testid="stSidebar"] {
+        background-color: #050505 !important;
+        border-right: 1px solid #00FF00;
+    }
+    section[data-testid="stSidebar"] label, section[data-testid="stSidebar"] div {
+        color: #00FF00 !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- SIDEBAR CONTROLS ---
+st.sidebar.markdown("### 🎛️ TERMINAL CONTROLS")
+selected_tf = st.sidebar.selectbox(
+    "Active Timeframe", ["1M", "5M", "15M", "1H", "4H", "1D"], index=2
+)
+selected_mode = st.sidebar.selectbox(
+    "Trading Mode", ["AUTO", "COUNTER-TREND", "TREND-FOLLOW"], index=0
+)
+st.sidebar.markdown("---")
+st.sidebar.markdown("Status: **Connected to Kraken Live API**")
+
 
 def compute_rsi(series, window=14):
   delta = series.diff()
@@ -91,14 +149,20 @@ def fetch_kraken_matrix():
 
       p_dir = "▲" if close_price >= prev_close else "▼"
 
+      # Determine EMA direction
       if ema9 > ema21:
         ma_dir = "▲"
-        light = "[ 🟢 ]"
       elif ema9 < ema21:
         ma_dir = "▼"
-        light = "[ 🔴 ]"
       else:
         ma_dir = "X"
+
+      # Traffic Lights reflecting RSI ONLY
+      if rsi_val > 55:
+        light = "[ 🟢 ]"
+      elif rsi_val < 45:
+        light = "[ 🔴 ]"
+      else:
         light = "[ 🟡 ]"
 
       results[label] = {
@@ -113,80 +177,56 @@ def fetch_kraken_matrix():
   return current_price, results
 
 
-# Force aggressive pure black background and neon green text styling across all elements
-st.markdown("""
-    <style>
-    .stApp, .main, .block-container, div[data-testid="stVerticalBlock"] {
-        background-color: #000000 !important;
-        color: #00FF00 !important;
-    }
-    pre {
-        background-color: #000000 !important;
-        color: #00FF00 !important;
-        border: 1px solid #00FF00 !important;
-        padding: 15px;
-        border-radius: 4px;
-        font-family: 'Courier New', Courier, monospace;
-        font-size: 13px;
-        line-height: 1.4;
-    }
-    p, span, label, h1, h2, h3, div {
-        color: #00FF00 !important;
-        font-family: 'Courier New', Courier, monospace !important;
-    }
-    .stButton>button {
-        background-color: #000000 !important;
-        color: #00FF00 !important;
-        border: 1px solid #00FF00 !important;
-        font-family: 'Courier New', Courier, monospace !important;
-        border-radius: 4px;
-    }
-    .stButton>button:hover {
-        background-color: #00FF00 !important;
-        color: #000000 !important;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-
 # Native Streamlit Fragment that automatically reruns every 5 seconds
 @st.fragment(run_every=5)
-def render_live_scanner():
+def render_live_scanner(active_tf, mode_override):
   price, matrix = fetch_kraken_matrix()
   current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-  m15_rsi = matrix.get("15M", {}).get("rsi", 50)
-  mode = "COUNTER-TREND" if m15_rsi > 60 or m15_rsi < 40 else "TREND-FOLLOW"
-  strategy = (
-      "BEARISH BREAKOUT WATCH" if m15_rsi > 55 else "BULLISH ACCUMULATION WATCH"
-  )
+  tf_rsi = matrix.get(active_tf, {}).get("rsi", 50)
 
+  if mode_override == "AUTO":
+    mode = "COUNTER-TREND" if tf_rsi > 60 or tf_rsi < 40 else "TREND-FOLLOW"
+  else:
+    mode = mode_override
+
+  strategy = (
+      "BEARISH BREAKOUT WATCH" if tf_rsi > 55 else "BULLISH ACCUMULATION WATCH"
+  )
   display_price = price if price > 0 else 77000.0
 
+  rows = []
+  for tf in ["1M", "5M", "15M", "1H", "4H", "1D"]:
+    label_str = f"{tf.ljust(4)}(*)" if tf == active_tf else f"{tf.ljust(7)}"
+    m_data = matrix.get(
+        tf, {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
+    )
+    rows.append(
+        f"| {label_str} : RSI {str(m_data['rsi']).ljust(4)} | P: {m_data['p']}"
+        f"  | MA: {m_data['ma']}  {m_data['light'].ljust(6)} |"
+    )
+
+  rows_joined = "\n".join(rows)
+
   terminal_display = f"""+-------------------------------------------------------+
-|  MULTI-TF SCANNER (Auto-Mode & Scrollable)            |
+|  MULTI-TF SCANNER (Interactive & Auto-Stream)         |
 +-------------------------------------------------------+
-| 1M     : RSI {matrix['1M']['rsi']:<4} | P: {matrix['1M']['p']}  | MA: {matrix['1M']['ma']}  {matrix['1M']['light']}        |
-| 5M     : RSI {matrix['5M']['rsi']:<4} | P: {matrix['5M']['p']}  | MA: {matrix['5M']['ma']}  {matrix['5M']['light']}        |
-| 15M(*) : RSI {matrix['15M']['rsi']:<4} | P: {matrix['15M']['p']}  | MA: {matrix['15M']['ma']}  {matrix['15M']['light']}        |
-| 1H     : RSI {matrix['1H']['rsi']:<4} | P: {matrix['1H']['p']}  | MA: {matrix['1H']['ma']}  {matrix['1H']['light']}        |
-| 4H     : RSI {matrix['4H']['rsi']:<4} | P: {matrix['4H']['p']}  | MA: {matrix['4H']['ma']}  {matrix['4H']['light']}        |
-| 1D     : RSI {matrix['1D']['rsi']:<4} | P: {matrix['1D']['p']}  | MA: {matrix['1D']['ma']}  {matrix['1D']['light']}        |
+{rows_joined}
 +-------------------------------------------------------+
 | MODE          : {mode:<37} |
-| ACTIVE TF     : 15M                                   |
+| ACTIVE TF     : {active_tf:<37} |
 | BTC PRICE     : ${display_price:,.2f}                     |
 | FADE-SHORT SL : ${display_price * 1.002:,.2f}               |
 | SIZE (BTC)    : 0.0360                                |
 | SIZE (USD)    : ${display_price * 0.0360:,.2f}                |
-| CONDITION     : MACRO COMPRESSION (5M,15M)            |
+| CONDITION     : MACRO COMPRESSION ({active_tf})                 |
 | STRATEGY      : {strategy:<37} |
 +-------------------------------------------------------+
-| LAST SYNC     : {current_time} | Status: KRAKEN LIVE  |
+| LAST SYNC     : {current_time} | Status: LIVE KRAKEN  |
 +-------------------------------------------------------+"""
 
   st.markdown(f"```text\n{terminal_display}\n```")
 
 
-# Run the live fragment block
-render_live_scanner()
+# Run the live fragment block passing the sidebar settings
+render_live_scanner(selected_tf, selected_mode)

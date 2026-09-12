@@ -1,7 +1,6 @@
 import ccxt
 import pandas as pd
 import streamlit as st
-import yfinance as yf
 
 # Page configuration for a compact terminal layout
 st.set_page_config(
@@ -41,7 +40,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# Technical Indicator Calculations
 def compute_rsi(series, window=14):
   delta = series.diff()
   gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
@@ -52,54 +50,29 @@ def compute_rsi(series, window=14):
 
 
 @st.cache_data(ttl=15)
-def fetch_live_matrix():
-  tf_configs = {
-      "1M": ("1m", "5d"),
-      "5M": ("5m", "5d"),
-      "15M": ("15m", "5d"),
-      "1H": ("1h", "1mo"),
-      "4H": ("1h", "1mo"),
-      "1D": ("1d", "3mo"),
-  }
-
+def fetch_ccxt_matrix():
+  exchange = ccxt.binance()
+  timeframes = {"1M": "1m", "5M": "5m", "15M": "15m", "1H": "1h", "4H": "4h", "1D": "1d"}
   results = {}
   current_price = 0.0
 
-  for label, (interval, period) in tf_configs.items():
+  for label, tf in timeframes.items():
     try:
-      df = yf.download(
-          "BTC-USD", period=period, interval=interval, progress=False
+      # Fetch OHLCV candles from Binance via CCXT
+      ohlcv = exchange.fetch_ohlcv("BTC/USDT", timeframe=tf, limit=50)
+      df = pd.DataFrame(
+          ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"]
       )
-      if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-      if label == "4H" and not df.empty:
-        df = (
-            df.resample("4H")
-            .agg({
-                "Open": "first",
-                "High": "max",
-                "Low": "min",
-                "Close": "last",
-                "Volume": "sum",
-            })
-            .dropna()
-        )
-
-      if df.empty or len(df) < 21:
-        results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
-        continue
 
       if label == "1M":
-        current_price = float(df["Close"].iloc[-1])
+        current_price = float(df["close"].iloc[-1])
 
-      rsi_val = compute_rsi(df["Close"])
-      ema9 = df["Close"].ewm(span=9).mean().iloc[-1]
-      ema21 = df["Close"].ewm(span=21).mean().iloc[-1]
-      close_price = df["Close"].iloc[-1]
-      prev_close = df["Close"].iloc[-2]
+      rsi_val = compute_rsi(df["close"])
+      ema9 = df["close"].ewm(span=9).mean().iloc[-1]
+      ema21 = df["close"].ewm(span=21).mean().iloc[-1]
+      close_price = df["close"].iloc[-1]
+      prev_close = df["close"].iloc[-2]
 
-      # Price Action & MA direction with traffic light symbols
       p_dir = "▲" if close_price >= prev_close else "▼"
 
       if ema9 > ema21:
@@ -121,25 +94,17 @@ def fetch_live_matrix():
     except Exception:
       results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
 
-  if current_price == 0.0:
-    fallback = yf.download("BTC-USD", period="1d", interval="1h", progress=False)
-    if isinstance(fallback.columns, pd.MultiIndex):
-      fallback.columns = fallback.columns.get_level_values(0)
-    current_price = float(fallback["Close"].iloc[-1])
-
   return current_price, results
 
 
-price, matrix = fetch_live_matrix()
+price, matrix = fetch_ccxt_matrix()
 
-# Dynamic Mode & Strategy calculations
 m15_rsi = matrix.get("15M", {}).get("rsi", 50)
 mode = "COUNTER-TREND" if m15_rsi > 60 or m15_rsi < 40 else "TREND-FOLLOW"
 strategy = (
     "BEARISH BREAKOUT WATCH" if m15_rsi > 55 else "BULLISH ACCUMULATION WATCH"
 )
 
-# Build exact terminal layout block matching your script
 terminal_display = f"""+-------------------------------------------------------+
 |  MULTI-TF SCANNER (Auto-Mode & Scrollable)            |
 +-------------------------------------------------------+

@@ -3,7 +3,6 @@ import pandas as pd
 import requests
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
-import yfinance as yf
 
 # Page configuration for a compact terminal layout
 st.set_page_config(
@@ -58,64 +57,42 @@ def compute_rsi(series, window=14):
   return rsi.iloc[-1] if not rsi.empty else 50.0
 
 
-def fetch_robust_matrix():
-  session = requests.Session()
-  session.headers.update({"User-Agent": "Mozilla/5.0"})
-
-  intervals = {
-      "1M": "1m",
-      "5M": "5m",
-      "15M": "15m",
-      "1H": "1h",
-      "4H": "1h",
-      "1D": "1d",
-  }
+def fetch_binance_matrix():
+  tf_mapping = {"1M": "1m", "5M": "5m", "15M": "15m", "1H": "1h", "4H": "4h", "1D": "1d"}
   results = {}
   current_price = 77000.0
 
-  df_main = yf.download(
-      "BTC-USD", period="1d", interval="1m", progress=False, session=session
-  )
-  if isinstance(df_main.columns, pd.MultiIndex):
-    df_main.columns = df_main.columns.get_level_values(0)
-  if not df_main.empty:
-    current_price = float(df_main["Close"].iloc[-1])
+  # Fetch live price directly from Binance public ticker
+  try:
+    ticker_res = requests.get(
+        "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=3
+    )
+    if ticker_res.status_code == 200:
+      current_price = float(ticker_res.json()["price"])
+  except Exception:
+    pass
 
-  for label, tf in intervals.items():
+  for label, interval in tf_mapping.items():
     try:
-      period_val = "1d" if tf in ["1m", "5m", "15m"] else "5d"
-      df = yf.download(
-          "BTC-USD",
-          period=period_val,
-          interval=tf,
-          progress=False,
-          session=session,
-      )
-      if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-      if label == "4H" and not df.empty:
-        df = (
-            df.resample("4H")
-            .agg({
-                "Open": "first",
-                "High": "max",
-                "Low": "min",
-                "Close": "last",
-                "Volume": "sum",
-            })
-            .dropna()
-        )
-
-      if df.empty or len(df) < 5:
+      url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={interval}&limit=50"
+      res = requests.get(url, timeout=3)
+      if res.status_code != 200:
         results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
         continue
 
-      rsi_val = compute_rsi(df["Close"])
-      ema9 = df["Close"].ewm(span=9).mean().iloc[-1]
-      ema21 = df["Close"].ewm(span=21).mean().iloc[-1]
-      close_price = df["Close"].iloc[-1]
-      prev_close = df["Close"].iloc[-2]
+      raw_data = res.json()
+      df = pd.DataFrame(raw_data, columns=[
+          "open_time", "open", "high", "low", "close", "volume",
+          "close_time", "quote_asset_volume", "number_of_trades",
+          "taker_buy_base", "taker_buy_quote", "ignore"
+      ])
+      df["close"] = df["close"].astype(float)
+
+      rsi_val = compute_rsi(df["close"])
+      ema9 = df["close"].ewm(span=9).mean().iloc[-1]
+      ema21 = df["close"].ewm(span=21).mean().iloc[-1]
+      close_price = df["close"].iloc[-1]
+      prev_close = df["close"].iloc[-2]
 
       p_dir = "▲" if close_price >= prev_close else "▼"
 
@@ -141,7 +118,7 @@ def fetch_robust_matrix():
   return current_price, results
 
 
-price, matrix = fetch_robust_matrix()
+price, matrix = fetch_binance_matrix()
 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 m15_rsi = matrix.get("15M", {}).get("rsi", 50)
@@ -169,7 +146,7 @@ terminal_display = f"""+-------------------------------------------------------+
 | CONDITION     : MACRO COMPRESSION (5M,15M)            |
 | STRATEGY      : {strategy:<37} |
 +-------------------------------------------------------+
-| LAST SYNC     : {current_time} | Status: AUTO-STREAM  |
+| LAST SYNC     : {current_time} | Status: LIVE API     |
 +-------------------------------------------------------+"""
 
 st.markdown(f"```text\n{terminal_display}\n```")

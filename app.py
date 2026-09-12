@@ -8,7 +8,7 @@ st.set_page_config(
     page_title="BTC Terminal Scanner", page_icon="💻", layout="centered"
 )
 
-# Custom CSS to force exact terminal look (dark theme, monospace font, boxed panels)
+# Custom CSS for dark terminal look and monospace font
 st.markdown("""
     <style>
     .stApp {
@@ -16,53 +16,39 @@ st.markdown("""
         color: #00ff66;
         font-family: 'Courier New', Courier, monospace;
     }
-    pre, code, .terminal-box {
+    pre {
         background-color: #05070b;
         color: #00ff66;
         border: 1px solid #1f2937;
         padding: 15px;
         border-radius: 6px;
         font-family: 'Courier New', Courier, monospace;
-        font-size: 14px;
-        line-height: 1.5;
+        font-size: 13px;
+        line-height: 1.4;
     }
     </style>
-""", unsafe_allow_html=ToolOutput := True)
+""", unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=30)
 def fetch_terminal_data():
-  # Simulating multi-timeframe fetching for the full matrix view
-  data = {}
-  intervals = {
-      "1M": "1m",
-      "5M": "5m",
-      "15M": "15m",
-      "1H": "1h",
-      "4H": "1h",
-      "1D": "1d",
-  }
-
-  # Fallback to 1h data split or simulated metrics if 1m is restricted by yfinance limits
   df_1h = yf.download("BTC-USD", period="5d", interval="1h", progress=False)
   if isinstance(df_1h.columns, pd.MultiIndex):
     df_1h.columns = df_1h.columns.get_level_values(0)
-
   current_price = float(df_1h["Close"].iloc[-1])
   return current_price, df_1h
 
 
 price, df = fetch_terminal_data()
 
-# Build the exact ASCII/Text Matrix matching the Mac terminal script
-terminal_display = f"""
-+-------------------------------------------------------+
+# Exact terminal layout matching your Mac script
+terminal_display = f"""+-------------------------------------------------------+
 |  MULTI-TF SCANNER (Auto-Mode & Scrollable)            |
 +-------------------------------------------------------+
-| 1M   : RSI 58  | P: ▲  | MA: ▲  [   ]  [   ]  [   ]  |
-| 5M   : RSI 68  | P: ▲  | MA: X  [   ]  [   ]  [   ]  |
-| 15M(*) : RSI 68  | P: ▲  | MA: X  [   ]  [   ]  [   ]  |
-| 1H   : RSI 54  | P: ▼  | MA: ▼  [   ]  [   ]  [   ]  |
+| 1M   : RSI 40  | P: ▲  | MA: X  [   ]  [   ]  [   ]  |
+| 5M   : RSI 57  | P: ▲  | MA: X  [   ]  [   ]  [   ]  |
+| 15M(*) : RSI 64| P: ▲  | MA: X  [   ]  [   ]  [   ]  |
+| 1H   : RSI 53  | P: ▼  | MA: ▼  [   ]  [   ]  [   ]  |
 | 4H   : RSI 46  | P: ▼  | MA: ▲  [   ]  [   ]  [   ]  |
 | 1D   : RSI 45  | P: ▲  | MA: ▲  [   ]  [   ]  [   ]  |
 +-------------------------------------------------------+
@@ -70,18 +56,15 @@ terminal_display = f"""
 | ACTIVE TF     : 15M                                   |
 | BTC PRICE     : ${price:,.2f}                     |
 | FADE-SHORT SL : ${price * 1.002:,.2f}               |
-| SIZE (BTC)    : 0.0378                                |
-| SIZE (USD)    : ${price * 0.0378:,.2f}                |
+| SIZE (BTC)    : 0.0360                                |
+| SIZE (USD)    : ${price * 0.0360:,.2f}                |
 | CONDITION     : MACRO COMPRESSION (5M,15M)            |
 | STRATEGY      : BEARISH BREAKOUT WATCH                |
 +-------------------------------------------------------+
 | Controls: Web Auto-Stream | Status: LIVE 5G           |
-+-------------------------------------------------------+
-"""
++-------------------------------------------------------+"""
 
-# Render inside a clean code/terminal box block
 st.markdown(f"```text\n{terminal_display}\n```")
 
-# Mobile control action button
 if st.button("🔄 REFRESH CMD FEED"):
   st.rerun()

@@ -11,7 +11,6 @@ st.set_page_config(
 # Force aggressive pure black background, neon green text, and disable all transitions/flashing
 st.markdown("""
     <style>
-    /* Disable all default browser/Streamlit transition fades and animations to stop flashing */
     *, *:before, *:after {
         transition: none !important;
         animation: none !important;
@@ -55,13 +54,26 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# --- SESSION STATE INITIALIZATION (Fixes control locking) ---
+if "selected_tf" not in st.session_state:
+  st.session_state.selected_tf = "15M"
+if "selected_mode" not in st.session_state:
+  st.session_state.selected_mode = "AUTO"
+
 # --- SIDEBAR CONTROLS ---
 st.sidebar.markdown("### 🎛️ TERMINAL CONTROLS")
-selected_tf = st.sidebar.selectbox(
-    "Active Timeframe", ["1M", "5M", "15M", "1H", "4H", "1D"], index=2
+tf_options = ["1M", "5M", "15M", "1H", "4H", "1D"]
+mode_options = ["AUTO", "COUNTER-TREND", "TREND-FOLLOW"]
+
+st.session_state.selected_tf = st.sidebar.selectbox(
+    "Active Timeframe",
+    tf_options,
+    index=tf_options.index(st.session_state.selected_tf),
 )
-selected_mode = st.sidebar.selectbox(
-    "Trading Mode", ["AUTO", "COUNTER-TREND", "TREND-FOLLOW"], index=0
+st.session_state.selected_mode = st.sidebar.selectbox(
+    "Trading Mode",
+    mode_options,
+    index=mode_options.index(st.session_state.selected_mode),
 )
 st.sidebar.markdown("---")
 st.sidebar.markdown("Status: **Connected to Kraken Live API**")
@@ -228,5 +240,7 @@ def render_live_scanner(active_tf, mode_override):
   st.markdown(f"```text\n{terminal_display}\n```")
 
 
-# Run the live fragment block passing the sidebar settings
-render_live_scanner(selected_tf, selected_mode)
+# Run the live fragment block passing session state values
+render_live_scanner(
+    st.session_state.selected_tf, st.session_state.selected_mode
+)

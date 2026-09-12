@@ -1,499 +1,74 @@
-import curses
-import time
 import ccxt
 import pandas as pd
-import warnings
-import threading
+import streamlit as st
+import yfinance as yf
 
-# Suppress SSL warnings to keep terminal clean
-warnings.filterwarnings('ignore')
+# Page configuration for mobile-responsive view
+st.set_page_config(
+    page_title="BTC Scanner", page_icon="📈", layout="centered"
+)
 
-def calculate_atr(df, period=14):
-    df['h-l'] = df['high'] - df['low']
-    df['h-pc'] = abs(df['high'] - df['close'].shift(1))
-    df['l-pc'] = abs(df['low'] - df['close'].shift(1))
-    df['tr'] = df[['h-l', 'h-pc', 'l-pc']].max(axis=1)
-    return df['tr'].rolling(window=period).mean().iloc[-1]
-
-def calculate_vwap(df):
-    q = df['volume']
-    p = df['close']
-    vwap = (p * q).cumsum() / q.cumsum()
-    return vwap.iloc[-1] if not vwap.empty else p.iloc[-1]
-
-def calculate_rsi(df, period=7):
-    """Calculates Wilder's RSI with period=7 for fast 1m manual entry view."""
-    delta = df['close'].diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-    
-    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
-    
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.iloc[-1]
-
-def make_row(label, val):
-    """Standard row layout matching the 44-character inner box width."""
-    return f"| {label:<13} : {val:<26} |"
+st.title("⚡ BTC Market Scanner")
+st.markdown("Live technical tracking and indicators dashboard.")
 
 
-# ==========================================
-# THREAD-SAFE MARKET DATA CACHE
-# ==========================================
-class MarketDataCache:
-    """Runs data fetching and indicator calculations in a background thread 
-       to protect rate limits and prevent UI freezing."""
-    def __init__(self, exchange, symbol):
-        self.exchange = exchange
-        self.symbol = symbol
-        self._lock = threading.Lock()
-        
-        self.timeframes = ['1m', '5m', '15m', '1h', '4h', '1d']
-        
-        # Shared cache state
-        self.latest_close = 0.0
-        self.atr = 0.0
-        self.vwap = 0.0
-        self.sl_price = 0.0
-        self.pos_btc = 0.0
-        self.pos_usd = 0.0
-        self.sl_label = "LONG SL"
-        self.scan_results = {tf: {"rsi": 0, "p_icon": "-", "p_col": 3, "ma_icon": "-", "ma_col": 3, "rsi_col": 3} for tf in self.timeframes}
-        
-        # Recommendation engine state
-        self.market_condition = "ANALYZING..."
-        self.strategy_rec = "MACRO WAIT"
-        self.strat_col = 3
-        self.auto_mode_suggestion = "trend"
-        
-        self.last_updated = 0
-        self._running = True
-        self._thread = threading.Thread(target=self._background_loop, daemon=True)
-        self._thread.start()
-
-    def _background_loop(self):
-        while self._running:
-            time.sleep(5)
-
-    def update_data(self, config):
-        """Called periodically or on-demand from the main loop via background worker safely."""
-        try:
-            # 1. Fetch Active Timeframe Data (For ATR/SL sizing only)
-            ohlcv_active = self.exchange.fetch_ohlcv(self.symbol, timeframe=config["active_tf"], limit=200)
-            df_active = pd.DataFrame(ohlcv_active, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-            close_val = df_active.iloc[-1]['close']
-            atr_val = calculate_atr(df_active)
-            vwap_val = calculate_vwap(df_active)
-            
-            df_active['ema50'] = df_active['close'].ewm(span=50, adjust=False).mean()
-            ema50_active = df_active['ema50'].iloc[-1]
-            
-            stop_distance = atr_val * 1.5
-
-            # 2. Fetch Matrix / All Timeframes Scan & Store Dataframes for Macro Check
-            new_scan_results = {}
-            macro_dataframes = {}
-            
-            for tf in self.timeframes:
-                try:
-                    ohlcv_tf = self.exchange.fetch_ohlcv(self.symbol, timeframe=tf, limit=200)
-                    df_tf = pd.DataFrame(ohlcv_tf, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-                    c_val = df_tf.iloc[-1]['close']
-                    
-                    df_tf['ema50'] = df_tf['close'].ewm(span=50, adjust=False).mean()
-                    df_tf['ema200'] = df_tf['close'].ewm(span=200, adjust=False).mean()
-                    
-                    e50 = df_tf['ema50'].iloc[-1]
-                    e200 = df_tf['ema200'].iloc[-1]
-                    e50_prev = df_tf['ema50'].iloc[-2]
-                    e200_prev = df_tf['ema200'].iloc[-2]
-                    
-                    rsi_val = int(calculate_rsi(df_tf, period=7))
-                    
-                    if c_val >= e50:
-                        p_icon = "▲"
-                        p_col = 1
-                    else:
-                        p_icon = "▼"
-                        p_col = 2
-                        
-                    curr_gap = abs(e50 - e200)
-                    prev_gap = abs(e50_prev - e200_prev)
-                    threshold = c_val * 0.0020
-                    is_imminent = (curr_gap <= threshold and curr_gap < prev_gap)
-                    
-                    if is_imminent:
-                        ma_icon = "X"
-                        ma_col = 2 if e50 >= e200 else 1
-                    else:
-                        ma_icon = "▲" if e50 >= e200 else "▼"
-                        ma_col = 1 if e50 >= e200 else 2
-                        
-                    rsi_col = 1 if rsi_val >= 50 else 2
-                        
-                    new_scan_results[tf] = {
-                        "rsi": rsi_val,
-                        "p_icon": p_icon,
-                        "p_col": p_col,
-                        "ma_icon": ma_icon,
-                        "ma_col": ma_col,
-                        "rsi_col": rsi_col
-                    }
-                    
-                    macro_dataframes[tf] = df_tf
-                except Exception:
-                    new_scan_results[tf] = self.scan_results.get(tf, {"rsi": 0, "p_icon": "-", "p_col": 3, "ma_icon": "-", "ma_col": 3, "rsi_col": 3})
-
-            # 3. Pure Macro Strategy Engine (14-Candle Persistence Check across 15m, 1h, 4h, 1d)
-            macro_tfs = ['15m', '1h', '4h', '1d']
-            bullish_macro_score = 0
-            bearish_macro_score = 0
-            cross_tfs = [tf.upper() for tf in self.timeframes if new_scan_results.get(tf, {}).get("ma_icon") == "X"]
-            
-            for m_tf in macro_tfs:
-                if m_tf in macro_dataframes:
-                    df_m = macro_dataframes[m_tf]
-                    if len(df_m) >= 14:
-                        last_14_closes = df_m['close'].iloc[-14:]
-                        last_14_ema = df_m['ema50'].iloc[-14:]
-                        bullish_bars = sum(1 for c, e in zip(last_14_closes, last_14_ema) if c >= e)
-                        
-                        if bullish_bars >= 11:
-                            bullish_macro_score += 1
-                        elif bullish_bars <= 3:
-                            bearish_macro_score += 1
-
-            if bullish_macro_score >= 3 or bearish_macro_score >= 3:
-                suggested_mode = "trend"
-            else:
-                suggested_mode = "counter"
-
-            if cross_tfs:
-                cond_text = f"MACRO COMPRESSION ({','.join(cross_tfs)})"
-                # Directional Breakout Inference: check general macro context or EMA stack
-                if bullish_macro_score >= bearish_macro_score:
-                    strat_text = "BULLISH BREAKOUT WATCH"
-                    strat_col = 1
-                else:
-                    strat_text = "BEARISH BREAKOUT WATCH"
-                    strat_col = 2
-            elif bullish_macro_score >= 3:
-                cond_text = "14-BAR MACRO BULL ALIGNMENT"
-                strat_text = "MACRO LONG BIAS"
-                strat_col = 1
-            elif bearish_macro_score >= 3:
-                cond_text = "14-BAR MACRO BEAR ALIGNMENT"
-                strat_text = "MACRO SHORT BIAS"
-                strat_col = 2
-            else:
-                cond_text = "MIXED MACRO TRENDS"
-                strat_text = "RANGE / MANUAL SCALP"
-                strat_col = 3
-
-            if config["mode"] == "counter":
-                if close_val >= ema50_active:
-                    s_label = "FADE-SHORT SL"
-                    s_price = close_val + stop_distance
-                else:
-                    s_label = "FADE-LONG SL"
-                    s_price = close_val - stop_distance
-            else:
-                if close_val >= ema50_active:
-                    s_label = "LONG SL"
-                    s_price = close_val - stop_distance
-                else:
-                    s_label = "SHORT SL"
-                    s_price = close_val + stop_distance
-            
-            account = config["account_size"]
-            risk_amount = account * (config["risk_pct"] / 100.0)
-            p_btc = risk_amount / stop_distance if stop_distance > 0 else 0
-            p_usd = p_btc * close_val
-
-            with self._lock:
-                self.latest_close = close_val
-                self.atr = atr_val
-                self.vwap = vwap_val
-                self.sl_price = s_price
-                self.pos_btc = p_btc
-                self.pos_usd = p_usd
-                self.sl_label = s_label
-                self.scan_results = new_scan_results
-                self.market_condition = cond_text
-                self.strategy_rec = strat_text
-                self.strat_col = strat_col
-                self.auto_mode_suggestion = suggested_mode
-                self.last_updated = time.time()
-        except Exception as e:
-            pass
-
-    def get_snapshot(self):
-        with self._lock:
-            return {
-                "latest_close": self.latest_close,
-                "atr": self.atr,
-                "vwap": self.vwap,
-                "sl_price": self.sl_price,
-                "pos_btc": self.pos_btc,
-                "pos_usd": self.pos_usd,
-                "sl_label": self.sl_label,
-                "scan_results": dict(self.scan_results),
-                "market_condition": self.market_condition,
-                "strategy_rec": self.strategy_rec,
-                "strat_col": self.strat_col,
-                "auto_mode_suggestion": self.auto_mode_suggestion,
-                "last_updated": self.last_updated
-            }
-
-
-def dashboard_main(stdscr):
-    curses.curs_set(1)
-    stdscr.nodelay(True)
-    stdscr.keypad(True)
-    
-    if curses.has_colors():
-        curses.start_color()
-        curses.use_default_colors()
-        curses.init_pair(1, curses.COLOR_GREEN, -1)
-        curses.init_pair(2, curses.COLOR_RED, -1)
-        curses.init_pair(3, curses.COLOR_YELLOW, -1)
-    
+# Fetch live data function
+@st.cache_data(ttl=60)
+def fetch_btc_data():
+  try:
+    # Example using CCXT for Binance/Exness data or yfinance fallback
     exchange = ccxt.binance()
-    symbol = 'BTC/USDT'
-    
-    config = {
-        "active_tf": "1m",
-        "account_size": 250.0,
-        "risk_pct": 1.0,
-        "mode": "trend"
+    ticker = exchange.fetch_ticker("BTC/USDT")
+    current_price = ticker["last"]
+    high_24h = ticker["high"]
+    low_24h = ticker["low"]
+    volume = ticker["baseVolume"]
+
+    return {
+        "price": current_price,
+        "high": high_24h,
+        "low": low_24h,
+        "volume": volume,
     }
-    
-    initialized_mode = False
-    show_legend = False
-    show_checklist = False
-    scroll_offset = 0
-    timeframes = ['1m', '5m', '15m', '1h', '4h', '1d']
-    data_cache = MarketDataCache(exchange, symbol)
-    
-    input_buffer = []
-    last_fetch_time = 0
-    feedback_msg = ""
-    
-    while True:
-        current_time = time.time()
-        max_y, max_x = stdscr.getmaxyx()
-        
-        if current_time - last_fetch_time >= 5.0 or last_fetch_time == 0:
-            threading.Thread(target=data_cache.update_data, args=(config.copy(),), daemon=True).start()
-            last_fetch_time = current_time
+  except Exception as e:
+    # Fallback to yfinance if exchange API hits rate limits
+    data = yf.download("BTC-USD", period="1d", interval="1h", progress=False)
+    latest = data.iloc[-1]
+    return {
+        "price": float(latest["Close"]),
+        "high": float(data["High"].max()),
+        "low": float(data["Low"].min()),
+        "volume": float(latest["Volume"]),
+    }
 
-        snapshot = data_cache.get_snapshot()
-        
-        if not initialized_mode and snapshot["latest_close"] > 0:
-            config["mode"] = snapshot["auto_mode_suggestion"]
-            feedback_msg = f"---> Auto-configured mode to: {config['mode'].upper()} <---"
-            initialized_mode = True
 
-        latest_close = snapshot["latest_close"]
-        sl_price = snapshot["sl_price"]
-        pos_btc = snapshot["pos_btc"]
-        pos_usd = snapshot["pos_usd"]
-        sl_label = snapshot["sl_label"]
-        scan_results = snapshot["scan_results"]
-        market_condition = snapshot["market_condition"]
-        strategy_rec = snapshot["strategy_rec"]
-        strat_col = snapshot["strat_col"]
+# Load data
+data = fetch_btc_data()
 
-        stdscr.clear()
-        
-        lines_to_render = []
-        
-        active_tf_upper = config["active_tf"].upper()
-        mode_display = "TREND-FOLLOWING" if config["mode"] == "trend" else "COUNTER-TREND"
-        box_top = "+--------------------------------------------+"
-        
-        lines_to_render.append((box_top, 0, 3))
-        lines_to_render.append(("| MULTI-TF SCANNER (Auto-Mode & Scrollable)  |", 0, 3))
-        lines_to_render.append((box_top, 0, 3))
-        
-        for tf in timeframes:
-            res = scan_results.get(tf, {"rsi": 0, "p_icon": "-", "p_col": 3, "ma_icon": "-", "ma_col": 3, "rsi_col": 3})
-            is_active_marker = "(*)" if tf == config["active_tf"] else "   "
-            tf_label = f"{tf.upper()}{is_active_marker}"
-            rsi_str = f"RSI {res['rsi']:<2}"
-            
-            base_str = f"| {tf_label:<6} : {rsi_str} | P: "
-            segments = [
-                (base_str, 0),
-                (res['p_icon'], res['p_col']),
-                (" | MA: ", 0),
-                (res['ma_icon'], res['ma_col']),
-                (" [ ", 0),
-                ("███", res['rsi_col']),
-                (" ] |", 0)
-            ]
-            lines_to_render.append((segments, 'segmented', 3))
-            
-        lines_to_render.append((box_top, 0, 3))
-        lines_to_render.append((make_row("MODE", mode_display), 0, 3))
-        lines_to_render.append((make_row("ACTIVE TF", active_tf_upper), 0, 3))
-        lines_to_render.append((make_row("BTC PRICE", f"${latest_close:,.2f}"), 0, 3))
-        lines_to_render.append((make_row(sl_label, f"${sl_price:,.2f}"), 0, 3))
-        lines_to_render.append((make_row("SIZE (BTC)", f"{pos_btc:.4f}"), 0, 3))
-        lines_to_render.append((make_row("SIZE (USD)", f"${pos_usd:,.2f}"), 0, 3))
-        lines_to_render.append((make_row("CONDITION", market_condition), 0, 3))
-        
-        strat_label_part = f"| {'STRATEGY':<13} : "
-        strat_segments = [
-            (strat_label_part, 0),
-            (f"{strategy_rec:<26}", strat_col),
-            (" |", 0)
-        ]
-        lines_to_render.append((strat_segments, 'segmented', 3))
-        lines_to_render.append((box_top, 0, 3))
-        
-        if show_legend:
-            legend_rows = [
-                "+--------------------------------------------+",
-                "| LEGEND: TRADE TYPES & INDICATORS           |",
-                "+--------------------------------------------+",
-                "| P (Price vs EMA50):                        |",
-                "|   ▲ Bullish (Price >= EMA50)               |",
-                "|   ▼ Bearish (Price < EMA50)                |",
-                "| MA (Moving Average Trend / Cross):         |",
-                "|   ▲ / ▼ EMA50 vs EMA200 Direction          |",
-                "|   X Compression / Imminent Cross           |",
-                "| RSI Block ([███]):                         |",
-                "|   Green (>=50 Bullish) / Red (<50 Bearish) |",
-                "| Strategy Recommendations:                  |",
-                "|   MACRO LONG BIAS    : 14-bar sustained bull |",
-                "|   MACRO SHORT BIAS   : 14-bar sustained bear |",
-                "|   BULLISH/BEARISH WATCH: Directional squeeze |",
-                "|   RANGE / MANUAL     : Chop / mixed signals  |",
-                "+--------------------------------------------+"
-            ]
-            for l_row in legend_rows:
-                lines_to_render.append((l_row, 0, 3))
+# Display metrics in a clean mobile-friendly layout
+col1, col2 = st.columns(2)
+with col1:
+  st.metric(
+      label="BTC Price",
+      value=f"${data['price']:,.2f}",
+      delta=f"High: ${data['high']:,.2f}",
+  )
+with col2:
+  st.metric(
+      label="24h Volume", value=f"{data['volume']:,.2f} BTC", delta="Active"
+  )
 
-        if show_checklist:
-            chk_rows = [
-                "+--------------------------------------------+",
-                "| TRADE CHECKLIST (1M SCALPING)              |",
-                "+--------------------------------------------+",
-                "| 1. Higher TF Zone Mapping (4H / 1H):       |",
-                "|    Confirm key support/resistance levels   |",
-                "| 2. Setup & Trigger (1M Chart):             |",
-                "|    Wait for price tap + RSI 80/20 extreme  |",
-                "| 3. Confirmation & Risk:                    |",
-                "|    Verify 1M candle close (no mid-wicks)   |",
-                "|    Apply ATR(14) stop buffer for noise     |",
-                "+--------------------------------------------+"
-            ]
-            for c_row in chk_rows:
-                lines_to_render.append((c_row, 0, 3))
+st.divider()
 
-        control_panel_height = 4
-        max_scroll = max(0, len(lines_to_render) - (max_y - control_panel_height))
-        scroll_offset = max(0, min(scroll_offset, max_scroll))
+# Historical Chart section
+st.subheader("Price Action Chart")
+history_data = yf.download("BTC-USD", period="5d", interval="1h", progress=False)
+if not history_data.empty:
+  # Flatten columns if multi-index is returned by yfinance
+  if isinstance(history_data.columns, pd.MultiIndex):
+    history_data.columns = history_data.columns.get_level_values(0)
+  st.line_chart(history_data["Close"])
 
-        visible_lines = lines_to_render[scroll_offset:scroll_offset + (max_y - control_panel_height)]
-        
-        current_y = 0
-        for item in visible_lines:
-            content, mode_type, _ = item
-            if current_y < max_y - control_panel_height:
-                if mode_type == 'segmented':
-                    curr_x = 0
-                    for text_seg, col_idx in content:
-                        try:
-                            stdscr.addstr(current_y, curr_x, text_seg, curses.color_pair(col_idx))
-                        except Exception:
-                            pass
-                        curr_x += len(text_seg)
-                else:
-                    try:
-                        stdscr.addstr(current_y, 0, content)
-                    except Exception:
-                        pass
-                current_y += 1
-
-        panel_start = current_y
-        if panel_start < max_y:
-            try:
-                stdscr.addstr(panel_start, 0, "--- Controls: Up/Down to Scroll | 'legend', 'checklist', 'mode', 'exit' ---")
-                if feedback_msg and panel_start + 1 < max_y:
-                    stdscr.addstr(panel_start + 1, 0, feedback_msg)
-                
-                typed_str = "".join(input_buffer)
-                prompt_line = panel_start + (2 if not feedback_msg else 3)
-                if prompt_line < max_y:
-                    stdscr.addstr(prompt_line, 0, f"Command > {typed_str}")
-            except Exception:
-                pass
-        
-        stdscr.refresh()
-
-        try:
-            ch = stdscr.getch()
-            while ch != -1:
-                if ch == curses.KEY_UP:
-                    scroll_offset -= 1
-                elif ch == curses.KEY_DOWN:
-                    scroll_offset += 1
-                elif ch in [curses.KEY_ENTER, ord('\n'), ord('\r')]:
-                    cmd = "".join(input_buffer).strip().lower()
-                    input_buffer.clear()
-                    feedback_msg = ""
-                    
-                    if cmd == 'exit':
-                        return
-                    elif cmd == 'legend':
-                        show_legend = not show_legend
-                        if show_legend: show_checklist = False
-                        scroll_offset = 0
-                        feedback_msg = f"---> Legend toggled: {'ON' if show_legend else 'OFF'} <---"
-                    elif cmd == 'checklist':
-                        show_checklist = not show_checklist
-                        if show_checklist: show_legend = False
-                        scroll_offset = 0
-                        feedback_msg = f"---> Checklist toggled: {'ON' if show_checklist else 'OFF'} <---"
-                    elif cmd == 'mode':
-                        if config["mode"] == "trend":
-                            config["mode"] = "counter"
-                            feedback_msg = "---> Switched to COUNTER-TREND Mode <---"
-                        else:
-                            config["mode"] = "trend"
-                            feedback_msg = "---> Switched to TREND-FOLLOWING Mode <---"
-                        last_fetch_time = 0
-                    elif cmd.startswith('acc '):
-                        try:
-                            new_acc = float(cmd.split(' ')[1])
-                            config["account_size"] = new_acc
-                            feedback_msg = f"---> Updated Account Size to: ${new_acc:.2f} <---"
-                        except ValueError:
-                            feedback_msg = "---> Invalid format. Use: acc 300 <---"
-                    elif cmd in timeframes:
-                        config["active_tf"] = cmd
-                        feedback_msg = f"---> Switched active risk timeframe to: {cmd.upper()} <---"
-                        last_fetch_time = 0 
-                    elif cmd == "":
-                        pass
-                    else:
-                        feedback_msg = f"---> Unknown command: '{cmd}' <---"
-                        
-                elif ch in [curses.KEY_BACKSPACE, 127, 8]:
-                    if input_buffer:
-                        input_buffer.pop()
-                elif 32 <= ch <= 126:
-                    input_buffer.append(chr(ch))
-                
-                ch = stdscr.getch()
-        except Exception:
-            pass
-
-        time.sleep(0.05)
-
-if __name__ == "__main__":
-    curses.wrapper(dashboard_main)
+# Manual refresh button for mobile users
+if st.button("🔄 Refresh Data"):
+  st.rerent = True  # Trigger rerun

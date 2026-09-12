@@ -1,4 +1,5 @@
 from datetime import datetime
+import time
 import pandas as pd
 import requests
 import streamlit as st
@@ -8,7 +9,7 @@ st.set_page_config(
     page_title="BTC Terminal Scanner", page_icon="💻", layout="centered"
 )
 
-# Force aggressive pure black background, neon green text, and disable all transitions/flashing
+# Force pure black background and neon green text
 st.markdown("""
     <style>
     *, *:before, *:after {
@@ -54,7 +55,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- SESSION STATE INITIALIZATION (Fixes control locking) ---
+# --- INITIALIZE SESSION STATE ---
 if "selected_tf" not in st.session_state:
   st.session_state.selected_tf = "15M"
 if "selected_mode" not in st.session_state:
@@ -65,16 +66,18 @@ st.sidebar.markdown("### 🎛️ TERMINAL CONTROLS")
 tf_options = ["1M", "5M", "15M", "1H", "4H", "1D"]
 mode_options = ["AUTO", "COUNTER-TREND", "TREND-FOLLOW"]
 
-st.session_state.selected_tf = st.sidebar.selectbox(
-    "Active Timeframe",
-    tf_options,
-    index=tf_options.index(st.session_state.selected_tf),
+# Dropdowns directly bound to session state keys
+active_tf = st.sidebar.selectbox(
+    "Active Timeframe", tf_options, index=tf_options.index(st.session_state.selected_tf), key="tf_box"
 )
-st.session_state.selected_mode = st.sidebar.selectbox(
-    "Trading Mode",
-    mode_options,
-    index=mode_options.index(st.session_state.selected_mode),
+selected_mode = st.sidebar.selectbox(
+    "Trading Mode", mode_options, index=mode_options.index(st.session_state.selected_mode), key="mode_box"
 )
+
+# Update session state values immediately when changed
+st.session_state.selected_tf = active_tf
+st.session_state.selected_mode = selected_mode
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("Status: **Connected to Kraken Live API**")
 
@@ -161,7 +164,6 @@ def fetch_kraken_matrix():
 
       p_dir = "▲" if close_price >= prev_close else "▼"
 
-      # Determine EMA direction
       if ema9 > ema21:
         ma_dir = "▲"
       elif ema9 < ema21:
@@ -189,39 +191,33 @@ def fetch_kraken_matrix():
   return current_price, results
 
 
-# Native Streamlit Fragment that automatically reruns every 5 seconds
-@st.fragment(run_every=5)
-def render_live_scanner(active_tf, mode_override):
-  price, matrix = fetch_kraken_matrix()
-  current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# --- FETCH DATA & RENDER TERMINAL ---
+price, matrix = fetch_kraken_matrix()
+current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-  tf_rsi = matrix.get(active_tf, {}).get("rsi", 50)
+tf_rsi = matrix.get(active_tf, {}).get("rsi", 50)
 
-  if mode_override == "AUTO":
-    mode = "COUNTER-TREND" if tf_rsi > 60 or tf_rsi < 40 else "TREND-FOLLOW"
-  else:
-    mode = mode_override
+if selected_mode == "AUTO":
+  mode = "COUNTER-TREND" if tf_rsi > 60 or tf_rsi < 40 else "TREND-FOLLOW"
+else:
+  mode = selected_mode
 
-  strategy = (
-      "BEARISH BREAKOUT WATCH" if tf_rsi > 55 else "BULLISH ACCUMULATION WATCH"
+strategy = "BEARISH BREAKOUT WATCH" if tf_rsi > 55 else "BULLISH ACCUMULATION WATCH"
+display_price = price if price > 0 else 77000.0
+
+rows = []
+for tf in tf_options:
+  label_str = f"{tf.ljust(4)}(*)" if tf == active_tf else f"{tf.ljust(7)}"
+  m_data = matrix.get(tf, {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"})
+  rows.append(
+      f"| {label_str} : RSI {str(m_data['rsi']).ljust(4)} | P: {m_data['p']}  |"
+      f" MA: {m_data['ma']}  {m_data['light'].ljust(6)} |"
   )
-  display_price = price if price > 0 else 77000.0
 
-  rows = []
-  for tf in ["1M", "5M", "15M", "1H", "4H", "1D"]:
-    label_str = f"{tf.ljust(4)}(*)" if tf == active_tf else f"{tf.ljust(7)}"
-    m_data = matrix.get(
-        tf, {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
-    )
-    rows.append(
-        f"| {label_str} : RSI {str(m_data['rsi']).ljust(4)} | P: {m_data['p']}"
-        f"  | MA: {m_data['ma']}  {m_data['light'].ljust(6)} |"
-    )
+rows_joined = "\n".join(rows)
 
-  rows_joined = "\n".join(rows)
-
-  terminal_display = f"""+-------------------------------------------------------+
-|  MULTI-TF SCANNER (Interactive & Auto-Stream)         |
+terminal_display = f"""+-------------------------------------------------------+
+|  MULTI-TF SCANNER (Interactive Sidebar Controls)      |
 +-------------------------------------------------------+
 {rows_joined}
 +-------------------------------------------------------+
@@ -237,10 +233,8 @@ def render_live_scanner(active_tf, mode_override):
 | LAST SYNC     : {current_time} | Status: LIVE KRAKEN  |
 +-------------------------------------------------------+"""
 
-  st.markdown(f"```text\n{terminal_display}\n```")
+st.markdown(f"```text\n{terminal_display}\n```")
 
-
-# Run the live fragment block passing session state values
-render_live_scanner(
-    st.session_state.selected_tf, st.session_state.selected_mode
-)
+# Auto-refresh loop every 5 seconds without full page jumps
+time.sleep(5)
+st.rerun()

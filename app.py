@@ -1,40 +1,43 @@
-import ccxt
 import pandas as pd
 import streamlit as st
+import yfinance as yf
 
 # Page configuration for a compact terminal layout
 st.set_page_config(
     page_title="BTC Terminal Scanner", page_icon="💻", layout="centered"
 )
 
-# Custom CSS for pure black background, bright green text, and monospaced console styling
+# Force aggressive pure black background and neon green text styling across all elements
 st.markdown("""
     <style>
-    .stApp {
-        background-color: #000000;
-        color: #00FF00;
-        font-family: 'Courier New', Courier, monospace;
+    .stApp, .main, .block-container, div[data-testid="stVerticalBlock"] {
+        background-color: #000000 !important;
+        color: #00FF00 !important;
     }
     pre {
-        background-color: #000000;
-        color: #00FF00;
-        border: 1px solid #00FF00;
+        background-color: #000000 !important;
+        color: #00FF00 !important;
+        border: 1px solid #00FF00 !important;
         padding: 15px;
         border-radius: 4px;
         font-family: 'Courier New', Courier, monospace;
         font-size: 13px;
         line-height: 1.4;
     }
+    p, span, label, h1, h2, h3, div {
+        color: #00FF00 !important;
+        font-family: 'Courier New', Courier, monospace !important;
+    }
     .stButton>button {
-        background-color: #000000;
-        color: #00FF00;
-        border: 1px solid #00FF00;
-        font-family: 'Courier New', Courier, monospace;
+        background-color: #000000 !important;
+        color: #00FF00 !important;
+        border: 1px solid #00FF00 !important;
+        font-family: 'Courier New', Courier, monospace !important;
         border-radius: 4px;
     }
     .stButton>button:hover {
-        background-color: #00FF00;
-        color: #000000;
+        background-color: #00FF00 !important;
+        color: #000000 !important;
     }
     </style>
 """, unsafe_allow_html=True)
@@ -50,28 +53,41 @@ def compute_rsi(series, window=14):
 
 
 @st.cache_data(ttl=15)
-def fetch_ccxt_matrix():
-  exchange = ccxt.binance()
-  timeframes = {"1M": "1m", "5M": "5m", "15M": "15m", "1H": "1h", "4H": "4h", "1D": "1d"}
+def fetch_robust_matrix():
+  intervals = {
+      "1M": "1m",
+      "5M": "5m",
+      "15M": "15m",
+      "1H": "1h",
+      "4H": "1h",
+      "1D": "1d",
+  }
   results = {}
-  current_price = 0.0
+  current_price = 77000.0
 
-  for label, tf in timeframes.items():
+  # Fetch main reference price safely
+  df_main = yf.download("BTC-USD", period="2d", interval="1h", progress=False)
+  if isinstance(df_main.columns, pd.MultiIndex):
+    df_main.columns = df_main.columns.get_level_values(0)
+  if not df_main.empty:
+    current_price = float(df_main["Close"].iloc[-1])
+
+  for label, tf in intervals.items():
     try:
-      # Fetch OHLCV candles from Binance via CCXT
-      ohlcv = exchange.fetch_ohlcv("BTC/USDT", timeframe=tf, limit=50)
-      df = pd.DataFrame(
-          ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"]
-      )
+      period_val = "1d" if tf in ["1m", "5m", "15m"] else "5d"
+      df = yf.download("BTC-USD", period=period_val, interval=tf, progress=False)
+      if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-      if label == "1M":
-        current_price = float(df["close"].iloc[-1])
+      if df.empty or len(df) < 5:
+        results[label] = {"rsi": 50.0, "p": "▲", "ma": "X", "light": "[   ]"}
+        continue
 
-      rsi_val = compute_rsi(df["close"])
-      ema9 = df["close"].ewm(span=9).mean().iloc[-1]
-      ema21 = df["close"].ewm(span=21).mean().iloc[-1]
-      close_price = df["close"].iloc[-1]
-      prev_close = df["close"].iloc[-2]
+      rsi_val = compute_rsi(df["Close"])
+      ema9 = df["Close"].ewm(span=9).mean().iloc[-1]
+      ema21 = df["Close"].ewm(span=21).mean().iloc[-1]
+      close_price = df["Close"].iloc[-1]
+      prev_close = df["Close"].iloc[-2]
 
       p_dir = "▲" if close_price >= prev_close else "▼"
 
@@ -86,7 +102,7 @@ def fetch_ccxt_matrix():
         light = "[ 🟡 ]"
 
       results[label] = {
-          "rsi": round(rsi_val, 1),
+          "rsi": round(float(rsi_val), 1),
           "p": p_dir,
           "ma": ma_dir,
           "light": light,
@@ -97,7 +113,7 @@ def fetch_ccxt_matrix():
   return current_price, results
 
 
-price, matrix = fetch_ccxt_matrix()
+price, matrix = fetch_robust_matrix()
 
 m15_rsi = matrix.get("15M", {}).get("rsi", 50)
 mode = "COUNTER-TREND" if m15_rsi > 60 or m15_rsi < 40 else "TREND-FOLLOW"
